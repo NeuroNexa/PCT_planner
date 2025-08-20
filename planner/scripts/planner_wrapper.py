@@ -87,14 +87,17 @@ class TomogramPlanner(object):
         )
 
     def plan(self, start_pos, end_pos):
-        # TODO: calculate slice index. By default the start and end pos are all at slice 0
-        self.start_idx[1:] = self.pos2idx(start_pos)
-        self.end_idx[1:] = self.pos2idx(end_pos)
+        self.start_idx = self.pos_to_idx_3d(start_pos)
+        self.end_idx = self.pos_to_idx_3d(end_pos)
+
+        print(f"Start index: {self.start_idx}")
+        print(f"End index: {self.end_idx}")
 
         self.planner.plan(self.start_idx, self.end_idx, True)
         path_finder: a_star.Astar = self.planner.get_path_finder()
         path = path_finder.get_result_matrix()
         if len(path) == 0:
+            print("A* search failed to find a path.")
             return None
 
         optimizer: traj_opt.GPMPOptimizer = (
@@ -109,6 +112,10 @@ class TomogramPlanner(object):
         layers = optimizer.get_layers()
         heights = optimizer.get_heights()
 
+        if len(traj_raw) == 0:
+            print("Trajectory optimization failed.")
+            return None
+
         opt_init = np.concatenate([opt_init.transpose(1, 0), init_layer.reshape(-1, 1)], axis=-1)
         traj = np.concatenate([traj_raw, layers.reshape(-1, 1)], axis=-1)
         y_idx = (traj.shape[-1] - 1) // 2
@@ -116,9 +123,21 @@ class TomogramPlanner(object):
         traj_3d = transTrajGrid2Map(self.map_dim, self.center, self.resolution, traj_3d)
 
         return traj_3d
-    
+
+    def pos_to_idx_3d(self, pos):
+        # Convert 3D position (x, y, z) to 3D grid index (slice, u, v)
+        slice_idx = int(round((pos[2] - self.slice_h0) / self.slice_dh))
+
+        # Clamp slice_idx to be within valid range
+        slice_idx = np.clip(slice_idx, 0, self.n_slice - 1)
+
+        idx_2d = self.pos2idx(pos[:2])
+
+        return np.array([slice_idx, idx_2d[0], idx_2d[1]], dtype=np.int32)
+
     def pos2idx(self, pos):
-        pos = pos - self.center
-        idx = np.round(pos / self.resolution).astype(np.int32) + self.offset
-        idx = np.array([idx[1], idx[0]], dtype=np.float32)
+        # Convert 2D position (x, y) to 2D grid index (u, v)
+        pos_relative = pos - self.center
+        idx = np.round(pos_relative / self.resolution).astype(np.int32) + self.offset
+        idx = np.array([idx[1], idx[0]], dtype=np.int32) # u, v
         return idx
