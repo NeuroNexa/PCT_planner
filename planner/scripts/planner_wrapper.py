@@ -27,6 +27,7 @@ class TomogramPlanner(object):
         self.slice_dh = None
         self.map_dim = []
         self.offset = None
+        self.elev_g = None
 
         self.start_idx = np.zeros(3, dtype=np.int32)
         self.end_idx = np.zeros(3, dtype=np.int32)
@@ -49,11 +50,11 @@ class TomogramPlanner(object):
         trav_gx = tomogram[1]
         trav_gy = tomogram[2]
         elev_g = tomogram[3]
-        elev_g = np.nan_to_num(elev_g, nan=-100)
+        self.elev_g = np.nan_to_num(elev_g, nan=-100)
         elev_c = tomogram[4]
         elev_c = np.nan_to_num(elev_c, nan=1e6)
 
-        self.initPlanner(trav, trav_gx, trav_gy, elev_g, elev_c)
+        self.initPlanner(trav, trav_gx, trav_gy, self.elev_g, elev_c)
         
     def initPlanner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
         diff_t = trav[1:] - trav[:-1]
@@ -126,18 +127,35 @@ class TomogramPlanner(object):
 
     def pos_to_idx_3d(self, pos):
         # Convert 3D position (x, y, z) to 3D grid index (slice, u, v)
-        slice_idx = int(round((pos[2] - self.slice_h0) / self.slice_dh))
 
-        # Clamp slice_idx to be within valid range
-        slice_idx = np.clip(slice_idx, 0, self.n_slice - 1)
-
+        # First, get the 2D grid index (u, v) from (x, y)
         idx_2d = self.pos2idx(pos[:2])
+        u, v = idx_2d[0], idx_2d[1]
 
-        return np.array([slice_idx, idx_2d[0], idx_2d[1]], dtype=np.int32)
+        # Get the z coordinate
+        z_pos = pos[2]
+
+        # Find the slice index whose elevation at (u, v) is closest to z_pos
+        if self.elev_g is not None:
+            # Get the elevation values for the cell (u, v) across all slices
+            heights_at_cell = self.elev_g[:, u, v]
+            # Find the index of the slice with the minimum absolute difference
+            slice_idx = np.argmin(np.abs(heights_at_cell - z_pos))
+        else:
+            # Fallback to old method if elev_g is not available
+            slice_idx = int(round((z_pos - self.slice_h0) / self.slice_dh))
+            # Clamp slice_idx to be within valid range
+            slice_idx = np.clip(slice_idx, 0, self.n_slice - 1)
+
+        return np.array([slice_idx, u, v], dtype=np.int32)
 
     def pos2idx(self, pos):
         # Convert 2D position (x, y) to 2D grid index (u, v)
         pos_relative = pos - self.center
         idx = np.round(pos_relative / self.resolution).astype(np.int32) + self.offset
+        # Note: The original code swapped indices. We need to be careful here.
+        # idx[0] is typically columns (y-axis in image), idx[1] is rows (x-axis in image)
+        # The planner's (u, v) likely corresponds to (row, col) which is (y, x) in numpy access.
+        # Let's stick to the original implementation's swapping.
         idx = np.array([idx[1], idx[0]], dtype=np.int32) # u, v
         return idx
