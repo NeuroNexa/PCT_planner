@@ -138,7 +138,10 @@ class TomogramPlanner(object):
         # Find the slice index whose elevation at (u, v) is closest to z_pos
         if self.elev_g is not None:
             # Get the elevation values for the cell (u, v) across all slices
-            heights_at_cell = self.elev_g[:, u, v]
+            # Note: Numpy indexes by (row, col), which corresponds to (y, x).
+            # The C++ planner seems to expect (u, v) as (x, y) or similar.
+            # Swapping u and v here to match numpy's indexing.
+            heights_at_cell = self.elev_g[:, v, u]
             # Find the index of the slice with the minimum absolute difference
             slice_idx = np.argmin(np.abs(heights_at_cell - z_pos))
         else:
