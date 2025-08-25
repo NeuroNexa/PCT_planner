@@ -16,6 +16,7 @@ using gtsam::noiseModel::Diagonal;
 using gtsam::noiseModel::Isotropic;
 using PriorFactor6 = gtsam::PriorFactor<Vector6>;
 
+// 定义高斯过程(GP)的Qc矩阵常数
 constexpr double kQc = 0.1 * 0.1;
 constexpr double kQcHeading = 0.01;
 
@@ -23,37 +24,43 @@ bool GPMPOptimizer::GenerateTrajectory(const std::vector<PathPoint>& input_path,
                                        const double T) {
   auto t0 = std::chrono::high_resolution_clock::now();
 
+  // --- 1. 初始化和参数设置 ---
+  // 定义起点和终点的噪声模型（置信度）
   Vector6 s_init, s_target;
   s_init << 0.001, 0.1, 1, 0.001, 0.1, 1;
   s_target << 0.001, 1, 1, 0.001, 1, 1;
-
   static auto sigma_initial = Diagonal::Sigmas(s_init);
   static auto sigma_goal = Diagonal::Sigmas(s_target);
 
+  // 对输入路径进行降采样，减少计算量
   std::vector<PathPoint> path;
   SubSamplePath(input_path, path);
 
+  // 计算时间步长
   double T_tmp = static_cast<double>(input_path.size() - 1) / 3;
   int N = path.size();
   double dt = T_tmp / (N - 1);
   double tau = dt / (interpolate_num_ + 1);
-  std::cout<<"tau: "<<tau<<std::endl;
+  std::cout << "tau: " << tau << std::endl;
 
+  // 获取起点和终点的6D状态向量
   Vector6 x0, xN;
   PathPointToNode(path.front(), x0);
   PathPointToNode(path.back(), xN);
-
   std::cout << "x0: " << x0.transpose() << std::endl;
   std::cout << "xN: " << xN.transpose() << std::endl;
 
+  // --- 2. 构建GTSAM因子图 ---
   auto graph = gtsam::NonlinearFactorGraph();
   int factor_idx = 0;
-  std::vector<int> obstacle_factor_idx;
+  std::vector<int> obstacle_factor_idx; // 用于记录障碍物因子的索引
 
+  // --- 3. 设置优化变量的初始值 ---
   gtsam::Values init_values;
   opt_init_value_ = Eigen::MatrixXd(6, N + (N - 1) * interpolate_num_);
   opt_init_layer_ = Eigen::VectorXd(N + (N - 1) * interpolate_num_);
 
+  // 通过在A*路径点之间插值来生成初始轨迹
   int col_index = 0;
   for (int i = 0; i < N; ++i) {
     Vector6 x1, x2;
@@ -78,29 +85,22 @@ bool GPMPOptimizer::GenerateTrajectory(const std::vector<PathPoint>& input_path,
         opt_init_layer_(col_index) = map_->UpdateLayerSafe(
             path[i].layer, inter_x(0, 0), inter_x(3, 0), height_hint);
         col_index++;
-        if (debug_) {
-          printf(
-              "path[%d/%d], layer: %d, inter_layer: %f, height: %f, "
-              "height2:%f, hint%f, (%f, %f)\n",
-              i, opt_init_layer_.size() - 1, path[i].layer,
-              opt_init_layer_(col_index), path[i].height, path[i + 1].height,
-              height_hint, inter_x(0, 0), inter_x(3, 0));
-        }
       }
     }
   }
 
-  if (debug_) {
-    std::cout << "opt_init_layer OK" << std::endl;
-  }
-
+  // --- 4. 向图中添加因子 ---
+  // 添加起点先验因子
   graph.add(PriorFactor6(gtsam::Symbol('x', 0), x0, sigma_initial));
   factor_idx++;
+  // 遍历路径段，添加GP因子、障碍物因子和航向角速率因子
   for (int i = 1; i < N; ++i) {
     gtsam::Key last_x = gtsam::Symbol('x', i - 1);
     gtsam::Key this_x = gtsam::Symbol('x', i);
+    // GP因子：确保轨迹的平滑性
     graph.add(GPPriorFactor(last_x, this_x, dt, kQc));
     factor_idx++;
+    // 为每个插值点添加障碍物和航向角速率因子
     for (int j = 0; j < interpolate_num_; ++j) {
       double height_hint =
           path[i - 1].height + (path[i].height - path[i - 1].height) * (j + 1) /
@@ -114,6 +114,7 @@ bool GPMPOptimizer::GenerateTrajectory(const std::vector<PathPoint>& input_path,
           tau * (j + 1)));
       factor_idx += 2;
     }
+    // 为路径节点（非插值点）添加因子
     if (i < N - 1) {
       graph.add(GPObstacleFactor(this_x, map_, path[i].layer, path[i].height,
                                  0.1, safe_cost_margin_, true));
@@ -122,27 +123,25 @@ bool GPMPOptimizer::GenerateTrajectory(const std::vector<PathPoint>& input_path,
       factor_idx += 2;
     }
   }
+  // 添加终点先验因子
   graph.add(PriorFactor6(gtsam::Symbol('x', N - 1), xN, sigma_goal));
   factor_idx++;
 
+  // --- 5. 运行优化 ---
   gtsam::LevenbergMarquardtParams param;
-  param.setlambdaInitial(200.0);
-  param.setMaxIterations(max_iterations_);
-  // param.setAbsoluteErrorTol(5e-4);
-  // param.setRelativeErrorTol(0.01);
-  // param.setErrorTol(1.0);
-  // param.setVerbosity("ERROR");
+  param.setlambdaInitial(200.0); // 设置LM算法的初始lambda
+  param.setMaxIterations(max_iterations_); // 设置最大迭代次数
 
   gtsam::LevenbergMarquardtOptimizer opt(graph, init_values, param);
   opt_results_ = Eigen::MatrixXd(N, 6);
   auto solution = opt.optimize();
 
+  // --- 6. 提取和后处理结果 ---
+  // 从因子中提取优化后的层信息
   opt_layers_ = Eigen::VectorXd::Zero(N + (N - 1) * interpolate_num_);
   opt_layers_(0) = path.front().layer;
   opt_layers_(opt_layers_.size() - 1) = path.back().layer;
   for (int i = 0; i < obstacle_factor_idx.size(); ++i) {
-    // printf("%d, %d, %d, %d\n", i + 1, N, obstacle_factor_idx.size(),
-    //        obstacle_factor_idx[i]);
     if (obstacle_factor_idx[i] < 1e7) {
       opt_layers_(i + 1) = dynamic_cast<GPObstacleFactor*>(
                                graph.at(obstacle_factor_idx[i]).get())
@@ -154,16 +153,19 @@ bool GPMPOptimizer::GenerateTrajectory(const std::vector<PathPoint>& input_path,
     }
   }
 
+  // 提取优化后的状态向量
   for (int i = 0; i < N; ++i) {
     opt_results_.row(i) =
         solution.at<Vector6>(gtsam::Symbol('x', i)).transpose();
   }
 
+  // 使用插值器生成最终的密集轨迹
   WnojTrajectoryInterpolator traj_interpolator =
       WnojTrajectoryInterpolator(opt_results_, dt, kQc);
   trajectory_ = traj_interpolator.GenerateTrajectory(interpolate_num_);
   printf("shape: %d, %d\n", trajectory_.rows(), trajectory_.cols());
 
+  // 对高度进行额外的平滑处理
   printf("smooth height\n");
   opt_height_ = Eigen::VectorXd::Zero(N + (N - 1) * interpolate_num_);
   opt_ceiling_ = Eigen::VectorXd::Zero(N + (N - 1) * interpolate_num_);
@@ -189,6 +191,7 @@ bool GPMPOptimizer::GenerateTrajectory(const std::vector<PathPoint>& input_path,
   return true;
 }
 
+// 将PathPoint转换为6D状态向量 [x, vx, ax, y, vy, ay]
 void GPMPOptimizer::PathPointToNode(const PathPoint& path_point, Vector6& x) {
   double v = std::max(path_point.ref_v, 1.0);
   x(0, 0) = path_point.x;
@@ -199,6 +202,7 @@ void GPMPOptimizer::PathPointToNode(const PathPoint& path_point, Vector6& x) {
   x(5, 0) = 0.0;
 }
 
+// 对路径进行降采样，以减少优化变量的数量
 void GPMPOptimizer::SubSamplePath(const std::vector<PathPoint>& path,
                                   std::vector<PathPoint>& sub_sampled_path) {
   assert(path.size() > 1);
@@ -238,6 +242,7 @@ void GPMPOptimizer::SubSamplePath(const std::vector<PathPoint>& path,
   printf("num segs: %d, new interval: %f\n", num_segs, new_interval);
 }
 
+// 计算轨迹的航向角速率
 Eigen::VectorXd GPMPOptimizer::GetHeadingRate() const {
   assert(trajectory_.rows() > 0);
 

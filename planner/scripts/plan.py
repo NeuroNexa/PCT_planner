@@ -12,12 +12,15 @@ from planner_wrapper import TomogramPlanner
 sys.path.append('../')
 from config import Config
 
+# --- 命令行参数解析 ---
 parser = argparse.ArgumentParser()
 parser.add_argument('--scene', type=str, default='Spiral', help='Name of the scene. Available: [\'Spiral\', \'Building\', \'Plaza\']')
 args = parser.parse_args()
 
+# --- 全局配置和变量 ---
 cfg = Config()
 
+# 根据场景参数选择对应的断层扫描图文件
 if args.scene == 'Spiral':
     tomo_file = 'spiral0.3_2'
 elif args.scene == 'Building':
@@ -25,51 +28,71 @@ elif args.scene == 'Building':
 else:
     tomo_file = 'plaza3_10'
 
+# ROS路径发布者
 path_pub = rospy.Publisher("/pct_path", Path, latch=True, queue_size=1)
+# 实例化规划器
 planner = TomogramPlanner(cfg)
 
+# 全局变量，用于存储起点和终点
 start_pos = None
 end_pos = None
 click_count = 0
 
 def point_callback(msg):
+    """
+    ROS回调函数，用于处理从RViz中点击的点。
+    交替设置起点和终点。
+    """
     global start_pos, end_pos, click_count
 
     click_count += 1
 
+    # 第一次点击（奇数次）设置起点
     if click_count % 2 == 1:
         start_pos = np.array([msg.point.x, msg.point.y, msg.point.z], dtype=np.float32)
-        print(f"Start point set to: ({start_pos[0]:.2f}, {start_pos[1]:.2f}, {start_pos[2]:.2f})")
-        print("Please select the end point in RViz.")
+        print(f"起点已设置为: ({start_pos[0]:.2f}, {start_pos[1]:.2f}, {start_pos[2]:.2f})")
+        print("请在RViz中选择终点。")
+    # 第二次点击（偶数次）设置终点并开始规划
     else:
         end_pos = np.array([msg.point.x, msg.point.y, msg.point.z], dtype=np.float32)
-        print(f"End point set to: ({end_pos[0]:.2f}, {end_pos[1]:.2f}, {end_pos[2]:.2f})")
+        print(f"终点已设置为: ({end_pos[0]:.2f}, {end_pos[1]:.2f}, {end_pos[2]:.2f})")
+        # 调用规划函数
         pct_plan()
-        print("\nTo plan a new path, please select a new start point in RViz.")
+        print("\n如需规划新路径，请在RViz中选择新的起点。")
 
 
 def pct_plan():
+    """
+    执行路径规划并发布结果。
+    """
     global start_pos, end_pos
     if start_pos is None or end_pos is None:
-        print("Start or end point not set.")
+        print("未设置起点或终点。")
         return
 
-    print("Planning path...")
+    print("正在规划路径...")
+    # 调用规划器核心的plan方法
     traj_3d = planner.plan(start_pos, end_pos)
+
+    # 如果规划成功，发布轨迹
     if traj_3d is not None:
         path_pub.publish(traj2ros(traj_3d))
-        print("Trajectory published")
+        print("轨迹已发布。")
     else:
-        print("Failed to find a path.")
+        print("未能找到路径。")
 
 
 if __name__ == '__main__':
+    # 初始化ROS节点
     rospy.init_node("pct_planner", anonymous=True)
 
+    # 加载指定的断层扫描图
     planner.loadTomogram(tomo_file)
 
+    # 订阅RViz中的 "/clicked_point" 话题
     rospy.Subscriber("/clicked_point", PointStamped, point_callback)
 
-    print("Planner initialized. Please select the start point in RViz using 'Publish Point'.")
+    print("规划器已初始化。请使用 'Publish Point' 在RViz中选择起点。")
 
+    # 保持节点运行
     rospy.spin()

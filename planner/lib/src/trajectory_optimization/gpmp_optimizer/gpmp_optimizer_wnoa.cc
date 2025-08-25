@@ -7,6 +7,7 @@
 #include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
 #include "gtsam/nonlinear/LevenbergMarquardtParams.h"
 #include "gtsam/nonlinear/Symbol.h"
+// 引入这个优化器专用的因子
 #include "trajectory_optimization/gpmp_optimizer/factors_origin/gp_prior_factor.h"
 #include "trajectory_optimization/gpmp_optimizer/factors_wnoa/gp_interpolate_obstacle_factor.h"
 #include "trajectory_optimization/gpmp_optimizer/factors_wnoa/gp_obstacle_factor.h"
@@ -16,25 +17,29 @@
 
 using gtsam::noiseModel::Diagonal;
 using gtsam::noiseModel::Isotropic;
-using PriorFactor4 = gtsam::PriorFactor<Vector4>;
+using PriorFactor4 = gtsam::PriorFactor<Vector4>; // 状态向量是4维
 
-constexpr double kQc = 0.1;
+constexpr double kQc = 0.1; // GP过程噪声
 
 bool GPMPOptimizerWnoa::GenerateTrajectory(
     const std::vector<PathPoint>& input_path, const double T) {
   auto t0 = std::chrono::high_resolution_clock::now();
+  // 4维状态向量的噪声模型
   static auto sigma_initial = Diagonal::Sigmas(Vector4(0.001, 0.1, 0.001, 0.1));
   static auto sigma_goal = Diagonal::Sigmas(Vector4(0.001, 1, 0.001, 1));
 
+  // 路径降采样
   std::vector<PathPoint> path;
   SubSamplePath(input_path, path);
 
+  // 计算时间步长
   double T_tmp = static_cast<double>(input_path.size() - 1) / 3;
   int N = path.size();
   double dt = T_tmp / (N - 1);
   double tau = dt / (interpolate_num_ + 1);
-  std::cout<<"tau: "<<tau<<std::endl;
+  std::cout << "tau: " << tau << std::endl;
 
+  // 获取起点和终点的4D状态
   Vector4 x0, xN;
   PathPointToNode(path.front(), x0);
   PathPointToNode(path.back(), xN);
@@ -45,14 +50,17 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
     std::cout << "xN: " << xN.transpose() << std::endl;
   }
 
+  // 构建因子图
   auto graph = gtsam::NonlinearFactorGraph();
   int factor_idx = 0;
   std::vector<int> obstacle_factor_idx;
 
+  // 设置优化变量的初始值
   gtsam::Values init_values;
   opt_init_value_ = Eigen::MatrixXd(4, N + (N - 1) * interpolate_num_);
   opt_init_layer_ = Eigen::VectorXd(N + (N - 1) * interpolate_num_);
 
+  // 通过插值生成初始轨迹
   int col_index = 0;
   for (int i = 0; i < N; ++i) {
     Vector4 x1, x2;
@@ -60,10 +68,6 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
     init_values.insert<Vector4>(gtsam::Symbol('x', i), x1);
     opt_init_value_.col(col_index) = x1;
     opt_init_layer_(col_index) = path[i].layer;
-    if (debug_) {
-      printf("path[%d/%d], layer: %d, height: %f\n", i, N - 1, path[i].layer,
-             path[i].height);
-    }
     col_index++;
     if (i < N - 1) {
       PathPointToNode(path[i + 1], x2);
@@ -74,39 +78,8 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
             path[i].height + (path[i + 1].height - path[i].height) * (j + 1) /
                                  (interpolate_num_ + 1);
         opt_init_value_.col(col_index) = inter_x;
-        if (debug_) {
-          printf(
-              "path[%d/%d], layer: %d, %f, height: %f, height2: "
-              "%f, "
-              "hint%f, (%f, %f)\n",
-              col_index, opt_init_layer_.size() - 1, path[i].layer,
-              path[i].height, path[i + 1].height, height_hint, inter_x(0, 0),
-              inter_x(2, 0));
-        }
-
         opt_init_layer_(col_index) = map_->UpdateLayerSafe(
             path[i].layer, inter_x(0, 0), inter_x(2, 0), height_hint);
-        // if (debug_) {
-        //   printf(
-        //       "path[%d/%d], layer: %d, inter_layer: %f, height: %f, height2:
-        //       "
-        //       "%f, "
-        //       "hint%f, (%f, %f)\n",
-        //       i, opt_init_layer_.size() - 1, path[i].layer,
-        //       opt_init_layer_(col_index), path[i].height, path[i + 1].height,
-        //       height_hint, inter_x(0, 0), inter_x(2, 0));
-        // }
-        // if (path[i].layer != opt_init_layer_(col_index)) {
-        //   if (debug_) {
-        //     map_->SetDebug(true);
-        //     std::cout << "layer change: " << path[i].layer << " -> "
-        //               << opt_init_layer_(col_index) << std::endl;
-        //     map_->UpdateLayerSafe(path[i].layer, inter_x(0, 0), inter_x(2,
-        //     0),
-        //                           height_hint);
-        //     map_->SetDebug(false);
-        //   }
-        // }
         col_index++;
       }
     }
@@ -116,15 +89,17 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
     std::cout << "opt_init_layer OK" << std::endl;
   }
 
-  // std::cout << opt_init_value_ << std::endl;
-
+  // 添加起点先验因子
   graph.add(PriorFactor4(gtsam::Symbol('x', 0), x0, sigma_initial));
   factor_idx++;
+  // 添加GP因子和障碍物因子
   for (int i = 1; i < N; ++i) {
     gtsam::Key last_x = gtsam::Symbol('x', i - 1);
     gtsam::Key this_x = gtsam::Symbol('x', i);
+    // GP因子
     graph.add(GPPriorFactorWnoa(last_x, this_x, dt, kQc));
     factor_idx++;
+    // 插值点的障碍物因子
     for (int j = 0; j < interpolate_num_; ++j) {
       double height_hint =
           path[i - 1].height + (path[i].height - path[i - 1].height) * (j + 1) /
@@ -135,6 +110,7 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
       obstacle_factor_idx.emplace_back(factor_idx + 1e7);
       factor_idx++;
     }
+    // 路径节点的障碍物因子
     if (i < N - 1) {
       graph.add(GPObstacleFactorWnoa(this_x, map_, path[i].layer,
                                      path[i].height, 0.1, safe_cost_margin_,
@@ -143,6 +119,7 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
       factor_idx++;
     }
   }
+  // 添加终点先验因子
   graph.add(PriorFactor4(gtsam::Symbol('x', N - 1), xN, sigma_goal));
   factor_idx++;
 
@@ -150,17 +127,12 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
     std::cout << "graph OK" << std::endl;
   }
 
-  // gtsam::GaussNewtonParams param;
+  // 配置优化器参数
   gtsam::LevenbergMarquardtParams param;
-  // param.setlambdaInitial(100.0);
   param.setMaxIterations(max_iterations_);
-  // param.setAbsoluteErrorTol(5e-4);
-  // param.setRelativeErrorTol(0.01);
-  // param.setErrorTol(1.0);
-  // param.setVerbosity("ERROR");
 
+  // 运行优化
   gtsam::LevenbergMarquardtOptimizer opt(graph, init_values, param);
-  // gtsam::GaussNewtonOptimizer opt(graph, init_values, param);
   opt_results_ = Eigen::MatrixXd(N, 4);
   auto solution = opt.optimize();
 
@@ -168,25 +140,11 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
     printf("optimization OK\n");
   }
 
-  // for (int i = 0; i < graph.size(); ++i) {
-  //   printf("----------------------\n");
-  //   graph.at(i)->printKeys();
-  //   printf("error %f\n", graph.at(i)->error(solution));
-  // }
-  // for (int i = 0; i < obstacle_factor_idx.size(); ++i) {
-  //   printf("----------------------\n");
-  //   auto factor = dynamic_cast<GPObstacleFactorWnoa*>(
-  //       graph.at(obstacle_factor_idx[i]).get());
-  //   // graph.at(obstacle_factor_idx[i])->printKeys();
-  //   printf("layer %d -> %d\n", path[i + 1].layer, factor->GetNodeLayer());
-  // }
-
+  // 提取优化后的层信息
   opt_layers_ = Eigen::VectorXd::Zero(N + (N - 1) * interpolate_num_);
   opt_layers_(0) = path.front().layer;
   opt_layers_(opt_layers_.size() - 1) = path.back().layer;
   for (int i = 0; i < obstacle_factor_idx.size(); ++i) {
-    // printf("%d, %d, %d, %d\n", i + 1, N, obstacle_factor_idx.size(),
-    //        obstacle_factor_idx[i]);
     if (obstacle_factor_idx[i] < 1e7) {
       opt_layers_(i + 1) = dynamic_cast<GPObstacleFactorWnoa*>(
                                graph.at(obstacle_factor_idx[i]).get())
@@ -197,23 +155,26 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
                                ->GetNodeLayer();
     }
   }
-  // std::cout << opt_layers_.transpose() << std::endl;
 
+  // 提取优化结果
   for (int i = 0; i < N; ++i) {
     opt_results_.row(i) =
         solution.at<Vector4>(gtsam::Symbol('x', i)).transpose();
   }
 
+  // 生成密集的轨迹
   WnoaTrajectoryInterpolator traj_interpolator =
       WnoaTrajectoryInterpolator(opt_results_, dt, kQc);
   trajectory_ = traj_interpolator.GenerateTrajectory(interpolate_num_);
 
+  // 提取高度信息
   opt_height_ = Eigen::VectorXd::Zero(N + (N - 1) * interpolate_num_);
   for (int i = 0; i < opt_layers_.size(); ++i) {
     opt_height_(i) =
         map_->GetHeight(opt_layers_(i), trajectory_(i, 0), trajectory_(i, 2));
   }
 
+  // 对高度进行平滑 (当前被注释掉了)
   printf("smooth height\n");
   //! todo: upper bound is not set here
   // opt_height_ =
@@ -231,6 +192,7 @@ bool GPMPOptimizerWnoa::GenerateTrajectory(
   return true;
 }
 
+// 将PathPoint转换为4D状态向量 [x, vx, y, vy]
 void GPMPOptimizerWnoa::PathPointToNode(const PathPoint& path_point,
                                         Vector4& x) {
   double v = std::max(path_point.ref_v, 1.0);
@@ -240,6 +202,7 @@ void GPMPOptimizerWnoa::PathPointToNode(const PathPoint& path_point,
   x(3, 0) = std::sin(path_point.heading) * v;
 }
 
+// 路径降采样
 void GPMPOptimizerWnoa::SubSamplePath(
     const std::vector<PathPoint>& path,
     std::vector<PathPoint>& sub_sampled_path) {
@@ -278,13 +241,9 @@ void GPMPOptimizerWnoa::SubSamplePath(
   }
 
   printf("num segs: %d, new interval: %f\n", num_segs, new_interval);
-  // print sub sampled path
-  // for (const auto& point : sub_sampled_path) {
-  //   std::cout << point.x << ", " << point.y << ", " << point.heading << ", "
-  //             << point.ref_v << std::endl;
-  // }
 }
 
+// GP先验因子测试函数
 Eigen::MatrixXd GPMPOptimizerWnoa::GPPriorTest(Vector4 x0, Vector4 xN,
                                                const double T, const int N) {
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -307,24 +266,12 @@ Eigen::MatrixXd GPMPOptimizerWnoa::GPPriorTest(Vector4 x0, Vector4 xN,
   for (int i = 0; i < N; ++i) {
     init_values.insert<Vector4>(gtsam::Symbol('x', i),
                                 x0 + i * (xN - x0) / (N - 1));
-    // std::cout << init_values.at<Vector4>(gtsam::Symbol('x', i)).transpose()
-    //           << std::endl;
   }
-  // for (int i = 1; i < graph.size(); ++i) {
-  //   printf("error %f\n", graph.at(i)->error(init_values));
-  // }
 
   gtsam::LevenbergMarquardtParams param;
-  // gtsam::GaussNewtonParams param;
-  // param.setlambdaInitial(100.0);
-  // param.setMaxIterations(50);
-  // param.setAbsoluteErrorTol(5e-4);
-  // param.setRelativeErrorTol(0.01);
-  // param.setErrorTol(1.0);
   param.setVerbosity("ERROR");
 
   gtsam::LevenbergMarquardtOptimizer opt(graph, init_values, param);
-  // gtsam::GaussNewtonOptimizer opt(graph, init_values, param);
   Eigen::MatrixXd result(N, 4);
   auto solution = opt.optimize();
   for (int i = 0; i < N; ++i) {
