@@ -80,12 +80,18 @@ class Tomography(object):
         从文件加载PCD点云数据，并初始化地图参数。
 
         Args:
-            pcd_file (str): PCD文件名。
+            pcd_file (str): PCD文件名或完整路径。
 
         Returns:
             np.ndarray: 加载的点云数据。
         """
-        pcd = o3d.io.read_point_cloud(rsg_root + "/rsc/pcd/" + pcd_file)
+        # 如果pcd_file不是绝对路径，则添加默认前缀
+        if not os.path.isabs(pcd_file):
+            pcd_path = os.path.join(rsg_root, "rsc", "pcd", pcd_file)
+        else:
+            pcd_path = pcd_file
+
+        pcd = o3d.io.read_point_cloud(pcd_path)
         points = np.asarray(pcd.points).astype(np.float32)
         rospy.loginfo("PCD points: %d", points.shape[0])
 
@@ -159,7 +165,11 @@ class Tomography(object):
         self.n_slice = layers_g.shape[0]
 
         # 导出生成的断层扫描图
-        map_file = os.path.splitext(self.pcd_file)[0]
+        # 如果是绝对路径，则只取文件名用于导出
+        if os.path.isabs(self.pcd_file):
+            map_file = os.path.splitext(os.path.basename(self.pcd_file))[0]
+        else:
+            map_file = os.path.splitext(self.pcd_file)[0]
         self.exportTomogram(np.stack((layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c)), map_file)
 
         # 初始化ROS发布者并发布所有可视化信息
@@ -278,13 +288,31 @@ if __name__ == '__main__':
 
     # 设置命令行参数解析
     parser = argparse.ArgumentParser()
+    # 添加 --scene 参数，用于选择预设场景
     parser.add_argument('--scene', type=str, help='Name of the scene. Available: [\'Spiral\', \'Building\', \'Plaza\']')
+    # 添加 --pcd 参数，用于指定自定义PCD文件路径
+    parser.add_argument('--pcd', type=str, help='Path to a custom PCD file.')
     args = parser.parse_args()
 
     # 加载配置
     cfg = Config()
-    # 动态导入指定场景的配置
-    scene_cfg = getattr(__import__('config'), 'Scene' + args.scene)
+
+    # 根据参数选择场景配置
+    if args.pcd:
+        # 如果提供了 --pcd 参数，则使用自定义场景配置
+        from config.scene_custom import SceneCustom
+        scene_cfg = SceneCustom()
+        scene_cfg.update(args.pcd)
+        rospy.loginfo("Using custom PCD: %s", args.pcd)
+    elif args.scene:
+        # 否则，使用预设的场景配置
+        scene_cfg = getattr(__import__('config'), 'Scene' + args.scene)
+        rospy.loginfo("Using scene: %s", args.scene)
+    else:
+        # 如果两个参数都未提供，则打印错误信息并退出
+        parser.error("Either --scene or --pcd argument must be provided.")
+        sys.exit(1)
+
 
     # 初始化ROS节点
     rospy.init_node('pointcloud_tomography', anonymous=True)

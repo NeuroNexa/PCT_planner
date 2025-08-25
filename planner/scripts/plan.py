@@ -1,6 +1,7 @@
 import sys
 import argparse
 import numpy as np
+import os
 
 import rospy
 from nav_msgs.msg import Path
@@ -14,19 +15,30 @@ from config import Config
 
 # --- 命令行参数解析 ---
 parser = argparse.ArgumentParser()
-parser.add_argument('--scene', type=str, default='Spiral', help='Name of the scene. Available: [\'Spiral\', \'Building\', \'Plaza\']')
+parser.add_argument('--scene', type=str, help='Name of the scene. Available: [\'Spiral\', \'Building\', \'Plaza\']')
+# 添加 --pcd 参数，用于指定自定义PCD文件路径
+parser.add_argument('--pcd', type=str, help='Path to a custom PCD file.')
 args = parser.parse_args()
 
 # --- 全局配置和变量 ---
 cfg = Config()
 
-# 根据场景参数选择对应的断层扫描图文件
-if args.scene == 'Spiral':
-    tomo_file = 'spiral0.3_2'
-elif args.scene == 'Building':
-    tomo_file = 'building2_9'
+# 根据参数选择对应的断层扫描图文件
+if args.pcd:
+    # 如果使用自定义PCD，则从路径中提取文件名作为断层扫描图的名称
+    tomo_file = os.path.splitext(os.path.basename(args.pcd))[0]
+elif args.scene:
+    # 根据预设场景选择断层扫描图文件
+    if args.scene == 'Spiral':
+        tomo_file = 'spiral0.3_2'
+    elif args.scene == 'Building':
+        tomo_file = 'building2_9'
+    else:
+        tomo_file = 'plaza3_10'
 else:
-    tomo_file = 'plaza3_10'
+    # 如果两个参数都未提供，则打印错误信息并退出
+    parser.error("Either --scene or --pcd argument must be provided.")
+    sys.exit(1)
 
 # ROS路径发布者
 path_pub = rospy.Publisher("/pct_path", Path, latch=True, queue_size=1)
