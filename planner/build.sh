@@ -1,4 +1,4 @@
-#!/bin.bash
+#!/bin/bash
 
 # 获取脚本所在的根目录
 ROOT_DIR=$(cd $(dirname "$0"); pwd)

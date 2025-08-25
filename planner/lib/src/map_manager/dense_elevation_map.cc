@@ -303,7 +303,7 @@ double DenseElevationMap::GetValueBilinearSafe(const int layer, const double x,
                                                const double y,
                                                const double height_hint,
                                                Eigen::Vector2d* grad) {
-  double x_lb = std.max(std::floor(x - 0.5), 0.0);
+  double x_lb = std::max(std::floor(x - 0.5), 0.0);
   double y_lb = std::max(std::floor(y - 0.5), 0.0);
 
   // 获取周围四个点的安全成本值
