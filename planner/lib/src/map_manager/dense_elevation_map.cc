@@ -47,7 +47,7 @@ double DenseElevationMap::GetRealCost(int layer, double x, double y,
   }
 
   // 如果成本较高，可能在层边界，检查上层和下层
-  double ele_value = ele_mask_(row, col);
+  // double ele_value = ele_mask_(row, col);
   double this_height = height_(row, col);
   int real_row = row;
   int real_layer = layer;
@@ -122,7 +122,7 @@ int DenseElevationMap::UpdateLayer(const int layer, const double x,
     return layer;
   }
 
-  double ele_value = ele_mask_(row, col);
+  // double ele_value = ele_mask_(row, col);
   double this_height = height_(row, col);
 
   // 检查下层

@@ -81,11 +81,11 @@ class OfflineElePlanner {
   const DenseElevationMap& get_map() const { return *map_; }
   // 获取带航向角优化的优化器
   const GPMPOptimizer& get_trajectory_optimizer() const {
-    return trajectory_optimizer_;
+    return trajectory_optimizer_wnoj_;
   }
   // 获取不带航向角优化的优化器
   const GPMPOptimizerWnoa& get_trajectory_optimizer_wnoj() const {
-    return trajectory_optimizer_wnoj_;
+    return trajectory_optimizer_;
   }
 
  private:

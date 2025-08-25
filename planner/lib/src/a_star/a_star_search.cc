@@ -243,7 +243,9 @@ int Astar::DecideLayer(const Node* cur_node) const {
 }
 
 // 计算两个节点间的移动成本（未实现）
-double Astar::CalculateStepCost(const Node* node1, const Node* node2) const {}
+double Astar::CalculateStepCost(const Node* node1, const Node* node2) const {
+  return 0.0;
+}
 
 // 计算启发式函数h(n)的值
 double Astar::GetHeuristic(const Node* node1, const Node* node2) const {
@@ -334,7 +336,9 @@ void Astar::ConvertClosedSetToMatrix(
 }
 
 // 获取邻居（未实现）
-std::vector<Eigen::Vector3i> Astar::GetNeighbors(Node* node) const {}
+std::vector<Eigen::Vector3i> Astar::GetNeighbors(Node* node) const {
+  return {};
+}
 
 // 获取指定层的成本图（用于调试）
 Eigen::MatrixXd Astar::GetCostLayer(int layer) const {
